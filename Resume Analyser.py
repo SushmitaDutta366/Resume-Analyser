@@ -1,13 +1,17 @@
 import streamlit as st
 import time
+import re
 from langchain_groq import ChatGroq
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.document_loaders import PyPDFLoader
 from dotenv import load_dotenv
+import os
 
 load_dotenv()
+
+API_KEY = os.getenv("GROQ_API_KEY")
 
 # ================= PAGE =================
 st.set_page_config(page_title="Resume Analyzer", page_icon="📄")
@@ -34,6 +38,13 @@ st.markdown("""
 .block-container {
     padding-top: 80px !important;
 }
+
+ /* USER MESSAGE RIGHT */
+[data-testid="stChatMessage"]:has(div[aria-label="user avatar"]) {
+    flex-direction: row-reverse;
+    text-align: right;
+}
+
 
 /* CARDS */
 .card {
@@ -144,17 +155,33 @@ if st.session_state.mode is None:
 # ================= PROMPT =================
 def build_prompt(context, question):
     return f"""
-Answer in bullet points.
-Use only resume info.
-If missing → say Not mentioned.
+You are a Helpful resume analyzer.
+
+RULES:
+- Answer in bullet points
+- Be concise
+- Use only resume data
+
+CRITICAL:
+- If dates like "Aug 2023 – Present" exist:
+    → Calculate experience duration
+    → Convert to years/months
+    → NEVER say 0 years
+
+Example:
+Aug 2023 – Present → ~1+ year
+
+- Do NOT ignore dates
+- Do NOT say "not mentioned" if inferable
 
 Resume:
 {context}
 
 Question:
 {question}
-"""
 
+Answer:
+"""
 # ==================================================
 # 📄 CHAT MODE
 # ==================================================
@@ -187,12 +214,12 @@ if st.session_state.mode == "chat":
 
             st.session_state.db = FAISS.from_documents(chunks, embeddings)
 
-        st.success("Resume ready ✅")
+        st.success("Resume Analyzed Successfully ✅")
 
     # ===== CHAT =====
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+            st.markdown(msg["content"], unsafe_allow_html=True)
 
     user_input = st.chat_input("Ask about the resume...")
 
@@ -200,22 +227,34 @@ if st.session_state.mode == "chat":
 
         st.session_state.messages.append({"role": "user", "content": user_input})
 
+            # ✅ SHOW USER MESSAGE (THIS WAS MISSING)
+        with st.chat_message("user"):
+            st.markdown(user_input)
+        
         with st.chat_message("assistant"):
             placeholder = st.empty()
-            full = ""
 
-            docs = st.session_state.db.as_retriever(k=4).invoke(user_input)
+            docs = st.session_state.db.as_retriever(k=8).invoke(user_input)
             context = "\n".join([d.page_content for d in docs])
 
             response = llm.invoke(build_prompt(context, user_input))
 
-            for word in response.content.split():
-                full += word + " "
-                placeholder.markdown(full)
-                time.sleep(0.02)
+            response_text = response.content
 
-        st.session_state.messages.append({"role": "assistant", "content": full})
+            items = re.split(r"\n|•", response_text)
+            clean_items = [i.replace("*", "").strip() for i in items if len(i.strip()) > 3]
 
+            html = "<ul>"
+            for item in clean_items:
+                html += f"<li>{item}</li>"
+            html += "</ul>"
+
+            placeholder.markdown(html, unsafe_allow_html=True)
+
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": html
+        })
     # ===== BACK BUTTON (BOTTOM) =====
     if st.button("⬅ Back to Dashboard"):
         st.session_state.mode = None
